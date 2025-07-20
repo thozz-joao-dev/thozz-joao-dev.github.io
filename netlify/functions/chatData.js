@@ -13,8 +13,8 @@ exports.handler = async (event, context) => {
     }
 
     const GITHUB_CONFIG = {
-        owner: 'joao-dev001',
-        repo: 'joao-dev001.github.io',
+        owner: process.env.GITHUB_OWNER,
+        repo: process.env.GITHUB_REPO,
         path: 'data/chatData.json',
         token: process.env.GITHUB_TOKEN
     };
@@ -33,7 +33,6 @@ exports.handler = async (event, context) => {
                 });
 
                 if (response.status === 404) {
-                    // Fichier n'existe pas encore
                     console.log('Fichier GitHub non trouvé, retour données vides');
                     return {
                         statusCode: 200,
@@ -75,7 +74,6 @@ exports.handler = async (event, context) => {
                     throw new Error('Données invalides');
                 }
 
-                // 1. Récupérer le SHA du fichier actuel (requis pour la mise à jour)
                 let sha = null;
                 try {
                     const currentFile = await fetch(githubApi, {
@@ -93,19 +91,16 @@ exports.handler = async (event, context) => {
                     console.log('Fichier n\'existe pas encore, création...');
                 }
 
-                // 2. Préparer le contenu encodé en base64
                 const content = JSON.stringify(newData, null, 2);
                 const encodedContent = Buffer.from(content).toString('base64');
-
-                // 3. Créer/Mettre à jour le fichier sur GitHub
                 const updatePayload = {
                     message: `Update chat data - ${new Date().toISOString()}`,
                     content: encodedContent,
-                    branch: 'main' // ou 'master' selon votre repo
+                    branch: 'main'
                 };
 
                 if (sha) {
-                    updatePayload.sha = sha; // Requis pour mise à jour
+                    updatePayload.sha = sha;
                 }
 
                 const updateResponse = await fetch(githubApi, {
