@@ -12,45 +12,40 @@ exports.handler = async (event, context) => {
         return { statusCode: 200, headers, body: '' };
     }
 
-    const GITHUB_CONFIG = {
-        owner: 'thozz-joao-dev',
-        repo: 'thozz-joao-dev.github.io',
-        path: 'data/chatData.json',
-        token: process.env.GITHUB_TOKEN
+    const JSONBIN_CONFIG = {
+        binId: process.env.JSONBIN_BIN_ID,
+        apiKey: process.env.JSONBIN_API_KEY,
+        baseUrl: 'https://api.jsonbin.io/v3'
     };
 
-    if (!GITHUB_CONFIG.token) {
-        console.error('❌ GITHUB_TOKEN non défini');
+    if (!JSONBIN_CONFIG.apiKey || !JSONBIN_CONFIG.binId) {
         return {
             statusCode: 500,
             headers,
             body: JSON.stringify({ 
-                error: 'Configuration manquante',
-                details: 'GITHUB_TOKEN non défini dans les variables d\'environnement'
+                error: 'Configuration JSONBin manquante',
+                details: 'JSONBIN_API_KEY et JSONBIN_BIN_ID requis'
             })
         };
     }
 
-    const githubApi = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.path}`;
-
     try {
         if (event.httpMethod === 'GET') {
-            console.log('📥 GET - Chargement depuis GitHub...');
+            console.log('📥 GET - Chargement depuis JSONBin...');
             
             try {
-                const response = await fetch(githubApi, {
+                const response = await fetch(`${JSONBIN_CONFIG.baseUrl}/b/${JSONBIN_CONFIG.binId}/latest`, {
                     headers: {
-                        'Authorization': `token ${GITHUB_CONFIG.token}`,
-                        'User-Agent': 'Netlify-Function',
-                        'Accept': 'application/vnd.github.v3+json'
+                        'X-Master-Key': JSONBIN_CONFIG.apiKey,
+                        'X-Bin-Meta': 'false' // On veut juste le contenu, pas les métadonnées
                     },
                     timeout: 10000
                 });
 
-                console.log(`📡 Status GitHub GET: ${response.status}`);
+                console.log(`📡 Status JSONBin GET: ${response.status}`);
 
                 if (response.status === 404) {
-                    console.log('📝 Fichier non trouvé, retour données vides');
+                    console.log('📝 Bin non trouvé, retour données vides');
                     return {
                         statusCode: 200,
                         headers,
@@ -60,15 +55,13 @@ exports.handler = async (event, context) => {
 
                 if (!response.ok) {
                     const errorText = await response.text();
-                    console.error(`❌ GitHub API error: ${response.status} - ${errorText}`);
-                    throw new Error(`GitHub API error: ${response.status}`);
+                    console.error(`❌ JSONBin error: ${response.status} - ${errorText}`);
+                    throw new Error(`JSONBin error: ${response.status}`);
                 }
 
-                const fileData = await response.json();
-                const content = Buffer.from(fileData.content, 'base64').toString('utf-8');
-                const data = JSON.parse(content);
+                const data = await response.json();
 
-                console.log('✅ Données chargées depuis GitHub');
+                console.log('✅ Données chargées depuis JSONBin');
                 return {
                     statusCode: 200,
                     headers,
@@ -76,7 +69,7 @@ exports.handler = async (event, context) => {
                 };
 
             } catch (error) {
-                console.error('❌ Erreur lecture GitHub:', error.message);
+                console.error('❌ Erreur lecture JSONBin:', error.message);
                 return {
                     statusCode: 200,
                     headers,
@@ -86,11 +79,9 @@ exports.handler = async (event, context) => {
         }
 
         if (event.httpMethod === 'POST') {
-            console.log('📤 POST - Début sauvegarde...');
+            console.log('📤 POST - Début sauvegarde JSONBin...');
             
-            // Validation du body
             if (!event.body) {
-                console.error('❌ Body vide');
                 return {
                     statusCode: 400,
                     headers,
@@ -101,9 +92,8 @@ exports.handler = async (event, context) => {
             let newData;
             try {
                 newData = JSON.parse(event.body);
-                console.log(`📊 JSON parsé: ${newData.conversations?.length || 0} conversations, ${newData.messages?.length || 0} messages`);
+                console.log(`📊 Données: ${newData.conversations?.length || 0} conversations, ${newData.messages?.length || 0} messages`);
             } catch (parseError) {
-                console.error('❌ Erreur parsing JSON:', parseError.message);
                 return {
                     statusCode: 400,
                     headers,
@@ -118,117 +108,69 @@ exports.handler = async (event, context) => {
             if (!newData || typeof newData !== 'object' || 
                 !Array.isArray(newData.conversations) || 
                 !Array.isArray(newData.messages)) {
-                console.error('❌ Structure invalide');
                 return {
                     statusCode: 400,
                     headers,
                     body: JSON.stringify({ 
-                        error: 'Structure de données invalide',
-                        expected: 'Objet avec arrays conversations et messages'
+                        error: 'Structure de données invalide'
                     })
                 };
             }
 
             try {
-                // 1. Récupérer le SHA actuel
-                console.log('🔍 Récupération du SHA...');
-                let sha = null;
-                
-                const currentResponse = await fetch(githubApi, {
-                    headers: {
-                        'Authorization': `token ${GITHUB_CONFIG.token}`,
-                        'User-Agent': 'Netlify-Function',
-                        'Accept': 'application/vnd.github.v3+json'
-                    },
-                    timeout: 10000
-                });
-                
-                console.log(`📡 Status récupération SHA: ${currentResponse.status}`);
-                
-                if (currentResponse.ok) {
-                    const currentData = await currentResponse.json();
-                    sha = currentData.sha;
-                    console.log(`🔑 SHA récupéré: ${sha.substring(0, 8)}...`);
-                } else if (currentResponse.status === 404) {
-                    console.log('📝 Fichier n\'existe pas, création...');
-                } else {
-                    const errorText = await currentResponse.text();
-                    console.error(`❌ Erreur récupération SHA: ${currentResponse.status} - ${errorText}`);
-                    throw new Error(`Impossible de récupérer le SHA: ${currentResponse.status}`);
-                }
-
-                // 2. Préparer le payload
-                const content = JSON.stringify(newData, null, 2);
-                const encodedContent = Buffer.from(content, 'utf8').toString('base64');
-                
-                const updatePayload = {
-                    message: `Update chat data - ${new Date().toISOString()}`,
-                    content: encodedContent,
-                    branch: 'main'
-                };
-
-                if (sha) {
-                    updatePayload.sha = sha;
-                }
-
-                console.log(`💾 ${sha ? 'Mise à jour' : 'Création'} du fichier...`);
-
-                // 3. Sauvegarder sur GitHub
-                const updateResponse = await fetch(githubApi, {
+                // Mise à jour du bin JSONBin
+                const updateResponse = await fetch(`${JSONBIN_CONFIG.baseUrl}/b/${JSONBIN_CONFIG.binId}`, {
                     method: 'PUT',
                     headers: {
-                        'Authorization': `token ${GITHUB_CONFIG.token}`,
                         'Content-Type': 'application/json',
-                        'User-Agent': 'Netlify-Function',
-                        'Accept': 'application/vnd.github.v3+json'
+                        'X-Master-Key': JSONBIN_CONFIG.apiKey,
+                        'X-Bin-Name': 'chat-data', // Nom optionnel
+                        'X-Collection-Id': '$default' // Collection par défaut
                     },
-                    body: JSON.stringify(updatePayload),
+                    body: JSON.stringify(newData),
                     timeout: 15000
                 });
 
-                console.log(`📡 Status GitHub PUT: ${updateResponse.status}`);
+                console.log(`📡 Status JSONBin PUT: ${updateResponse.status}`);
 
                 if (!updateResponse.ok) {
                     const errorData = await updateResponse.text();
-                    console.error(`❌ GitHub update failed: ${updateResponse.status} - ${errorData}`);
+                    console.error(`❌ JSONBin update failed: ${updateResponse.status} - ${errorData}`);
                     
                     return {
                         statusCode: 500,
                         headers,
                         body: JSON.stringify({ 
-                            error: 'Échec sauvegarde GitHub',
+                            error: 'Échec sauvegarde JSONBin',
                             status: updateResponse.status,
-                            details: errorData.substring(0, 500) // Limiter pour éviter les gros logs
+                            details: errorData.substring(0, 500)
                         })
                     };
                 }
 
                 const result = await updateResponse.json();
-                console.log('✅ Sauvegarde GitHub réussie');
+                console.log('✅ Sauvegarde JSONBin réussie');
                 
                 return {
                     statusCode: 200,
                     headers,
                     body: JSON.stringify({ 
                         success: true,
-                        storage: 'github',
-                        sha: result.content?.sha,
-                        size: content.length,
+                        storage: 'jsonbin',
+                        binId: JSONBIN_CONFIG.binId,
                         timestamp: new Date().toISOString()
                     })
                 };
 
             } catch (saveError) {
-                console.error('❌ Erreur dans la sauvegarde:', saveError.message);
-                console.error('Stack:', saveError.stack);
+                console.error('❌ Erreur sauvegarde JSONBin:', saveError.message);
                 
                 return {
                     statusCode: 500,
                     headers,
                     body: JSON.stringify({ 
-                        error: 'Erreur lors de la sauvegarde',
-                        details: saveError.message,
-                        type: saveError.constructor.name
+                        error: 'Erreur lors de la sauvegarde JSONBin',
+                        details: saveError.message
                     })
                 };
             }
@@ -242,15 +184,13 @@ exports.handler = async (event, context) => {
 
     } catch (error) {
         console.error('❌ Erreur générale:', error.message);
-        console.error('Stack:', error.stack);
         
         return {
             statusCode: 500,
             headers,
             body: JSON.stringify({ 
                 error: 'Erreur serveur interne',
-                details: error.message,
-                type: error.constructor.name
+                details: error.message
             })
         };
     }
