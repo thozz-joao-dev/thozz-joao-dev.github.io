@@ -13,11 +13,23 @@ exports.handler = async (event, context) => {
     }
 
     const GITHUB_CONFIG = {
-        owner: process.env.GITHUB_OWNER,
-        repo: process.env.GITHUB_REPO,
+        owner: 'thozz-joao-dev',
+        repo: 'thozz-joao-dev.github.io',
         path: 'data/chatData.json',
         token: process.env.GITHUB_TOKEN
     };
+
+    if (!GITHUB_CONFIG.token) {
+        console.error('GITHUB_TOKEN non défini');
+        return {
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({ 
+                error: 'Configuration manquante',
+                details: 'GITHUB_TOKEN non défini'
+            })
+        };
+    }
 
     const githubApi = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.path}`;
 
@@ -28,9 +40,12 @@ exports.handler = async (event, context) => {
                 const response = await fetch(githubApi, {
                     headers: {
                         'Authorization': `token ${GITHUB_CONFIG.token}`,
-                        'User-Agent': 'Netlify-Function'
+                        'User-Agent': 'Netlify-Function',
+                        'Accept': 'application/vnd.github.v3+json'
                     }
                 });
+
+                console.log(`Status GitHub GET: ${response.status}`);
 
                 if (response.status === 404) {
                     console.log('Fichier GitHub non trouvé, retour données vides');
@@ -42,6 +57,8 @@ exports.handler = async (event, context) => {
                 }
 
                 if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`GitHub API error: ${response.status} - ${errorText}`);
                     throw new Error(`GitHub API error: ${response.status}`);
                 }
 
@@ -68,27 +85,67 @@ exports.handler = async (event, context) => {
 
         if (event.httpMethod === 'POST') {
             try {
-                const newData = JSON.parse(event.body);
+                console.log('Début POST - Body reçu:', event.body?.substring(0, 200));
+                
+                let newData;
+                try {
+                    newData = JSON.parse(event.body);
+                } catch (parseError) {
+                    console.error('Erreur parsing JSON:', parseError);
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ 
+                            error: 'JSON invalide',
+                            details: parseError.message 
+                        })
+                    };
+                }
                 
                 if (!newData || typeof newData !== 'object') {
-                    throw new Error('Données invalides');
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ error: 'Données invalides' })
+                    };
                 }
+
+                if (!Array.isArray(newData.conversations) || !Array.isArray(newData.messages)) {
+                    return {
+                        statusCode: 400,
+                        headers,
+                        body: JSON.stringify({ 
+                            error: 'Structure de données invalide',
+                            expected: 'conversations et messages doivent être des arrays'
+                        })
+                    };
+                }
+
+                console.log(`Données valides: ${newData.conversations.length} conversations, ${newData.messages.length} messages`);
 
                 let sha = null;
                 try {
+                    console.log('Récupération du SHA...');
                     const currentFile = await fetch(githubApi, {
                         headers: {
                             'Authorization': `token ${GITHUB_CONFIG.token}`,
-                            'User-Agent': 'Netlify-Function'
+                            'User-Agent': 'Netlify-Function',
+                            'Accept': 'application/vnd.github.v3+json'
                         }
                     });
+                    
+                    console.log(`Status récupération SHA: ${currentFile.status}`);
                     
                     if (currentFile.ok) {
                         const currentData = await currentFile.json();
                         sha = currentData.sha;
+                        console.log('SHA récupéré:', sha?.substring(0, 8) + '...');
+                    } else if (currentFile.status !== 404) {
+                        const errorText = await currentFile.text();
+                        console.error('Erreur récupération SHA:', errorText);
                     }
                 } catch (shaError) {
-                    console.log('Fichier n\'existe pas encore, création...');
+                    console.log('Fichier n\'existe pas encore, création...', shaError.message);
                 }
 
                 const content = JSON.stringify(newData, null, 2);
@@ -101,30 +158,50 @@ exports.handler = async (event, context) => {
 
                 if (sha) {
                     updatePayload.sha = sha;
+                    console.log('Mise à jour avec SHA');
+                } else {
+                    console.log('Création nouveau fichier');
                 }
 
+                console.log('Envoi vers GitHub...');
                 const updateResponse = await fetch(githubApi, {
                     method: 'PUT',
                     headers: {
                         'Authorization': `token ${GITHUB_CONFIG.token}`,
                         'Content-Type': 'application/json',
-                        'User-Agent': 'Netlify-Function'
+                        'User-Agent': 'Netlify-Function',
+                        'Accept': 'application/vnd.github.v3+json'
                     },
                     body: JSON.stringify(updatePayload)
                 });
 
+                console.log(`Status GitHub PUT: ${updateResponse.status}`);
+
                 if (!updateResponse.ok) {
                     const errorData = await updateResponse.text();
-                    throw new Error(`GitHub update failed: ${updateResponse.status} - ${errorData}`);
+                    console.error(`GitHub update failed: ${updateResponse.status} - ${errorData}`);
+                    
+                    return {
+                        statusCode: 500,
+                        headers,
+                        body: JSON.stringify({ 
+                            error: 'Erreur GitHub API',
+                            status: updateResponse.status,
+                            details: errorData
+                        })
+                    };
                 }
 
-                console.log('Données sauvegardées sur GitHub');
+                const result = await updateResponse.json();
+                console.log('Sauvegarde GitHub réussie');
+                
                 return {
                     statusCode: 200,
                     headers,
                     body: JSON.stringify({ 
                         success: true, 
                         storage: 'github',
+                        sha: result.content?.sha,
                         timestamp: new Date().toISOString()
                     })
                 };
@@ -155,7 +232,8 @@ exports.handler = async (event, context) => {
             headers,
             body: JSON.stringify({ 
                 error: 'Erreur serveur', 
-                details: error.message
+                details: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
             })
         };
     }
