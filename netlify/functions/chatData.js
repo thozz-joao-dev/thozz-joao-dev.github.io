@@ -34,6 +34,11 @@ exports.handler = async (event, context) => {
     const githubApi = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.path}`;
 
     try {
+        console.log('=== DEBUG START ===');
+        console.log('Method:', event.httpMethod);
+        console.log('Token exists:', !!process.env.GITHUB_TOKEN);
+        console.log('Token length:', process.env.GITHUB_TOKEN?.length || 'UNDEFINED');
+        
         if (event.httpMethod === 'GET') {
             try {
                 console.log('Chargement depuis GitHub...');
